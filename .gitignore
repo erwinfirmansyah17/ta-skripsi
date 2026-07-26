@@ -1,0 +1,15 @@
+__pycache__/
+.vscode/
+venv/
+venv
+.venv/
+.venv
+
+Model/
+*.h5
+*.ipynb_checkpoints/
+*.txt
+.env
+.cache/
+
+app-copy.py
