@@ -8,7 +8,6 @@ venv
 Model/
 *.h5
 *.ipynb_checkpoints/
-*.txt
 .env
 .cache/
 

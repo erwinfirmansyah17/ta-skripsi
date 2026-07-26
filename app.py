@@ -34,19 +34,6 @@ from tensorflow.keras.models import Model, load_model
 # PAGE CONFIG
 # ============================================================
 
-st.set_page_config(
-    page_title="Lumpy Skin Disease Classification",
-    layout="wide",
-)
-
-st.title("Lumpy Skin Disease Classification")
-st.caption("U2Net segmentation + selectable VGG19 scenario model")
-
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-
 IMG_SIZE = (224, 224)
 THRESHOLD = 0.5
 
@@ -102,43 +89,54 @@ def get_hf_token():
                 token = value.strip().strip('"').strip("'")
                 break
 
-    return token or os.getenv("TOKEN-HG") or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    return token or os.getenv("TOKEN-HG") or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN") or st.secrets.get("TOKEN-HG") or st.secrets.get("HF_TOKEN") or st.secrets.get("HUGGINGFACE_HUB_TOKEN")
 
 
 def download_model_from_huggingface(model_filename, destination_path):
     repo_id = "erwinfirmansyah/ta-skripsi"
     token = get_hf_token()
-
     destination_path.parent.mkdir(parents=True, exist_ok=True)
 
-    downloaded_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=model_filename,
-        repo_type="model",
-        token=token,
-        local_dir=str(destination_path.parent),
-        local_dir_use_symlinks=False,
-    )
+    candidate_files = [model_filename, f"model/{model_filename}"]
+    last_error = None
 
-    downloaded_file = Path(downloaded_path)
-    if downloaded_file != destination_path:
-        if destination_path.exists():
-            destination_path.unlink()
-        downloaded_file.replace(destination_path)
+    for candidate in candidate_files:
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=candidate,
+                repo_type="model",
+                token=token,
+                local_dir=str(destination_path.parent),
+                local_dir_use_symlinks=False,
+            )
 
-    return destination_path
+            downloaded_file = Path(downloaded_path)
+            if downloaded_file != destination_path:
+                if destination_path.exists():
+                    destination_path.unlink()
+                downloaded_file.replace(destination_path)
+
+            return destination_path
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(f"Gagal mengunduh model {model_filename} dari Hugging Face: {last_error}")
 
 
 def resolve_model_path(scenario):
-    local_path = scenario["path"]
-    if local_path.exists():
-        return local_path
+    base_dir = Path(__file__).resolve().parent
+    cached_path = base_dir / ".cache" / "models" / scenario["filename"]
 
-    cached_path = Path(".cache/models") / scenario["filename"]
-    if cached_path.exists():
-        return cached_path
-
-    return download_model_from_huggingface(scenario["filename"], cached_path)
+    try:
+        return download_model_from_huggingface(scenario["filename"], cached_path)
+    except Exception:
+        local_path = base_dir / scenario["path"]
+        if local_path.exists():
+            return local_path
+        if cached_path.exists():
+            return cached_path
+        raise
 
 
 # ============================================================
@@ -326,90 +324,103 @@ def predict_image(model, img):
 # APP
 # ============================================================
 
-scenario_name = st.sidebar.selectbox("Pilih model skenario", list(SCENARIOS.keys()))
-scenario = SCENARIOS[scenario_name]
-model_path = resolve_model_path(scenario)
-
-st.sidebar.caption(scenario["description"])
-st.sidebar.caption(f"File model: {model_path}")
-
-missing_models = [
-    f"{name}: {config['path']}"
-    for name, config in SCENARIOS.items()
-    if not config["path"].exists()
-]
-
-if missing_models:
-    st.sidebar.warning(
-        "Model belum ditemukan:\n\n" + "\n".join(f"- {item}" for item in missing_models)
+def main():
+    st.set_page_config(
+        page_title="Lumpy Skin Disease Classification",
+        layout="wide",
     )
 
-if not model_path.exists():
-    st.error(
-        f"File model untuk {scenario_name} belum ada di workspace: {model_path}. "
-        "Letakkan file .h5 sesuai nama tersebut atau ubah path pada konfigurasi SCENARIOS."
+    st.title("Lumpy Skin Disease Classification")
+    st.caption("U2Net segmentation + selectable VGG19 scenario model")
+
+    scenario_name = st.sidebar.selectbox("Pilih model skenario", list(SCENARIOS.keys()))
+    scenario = SCENARIOS[scenario_name]
+    model_path = resolve_model_path(scenario)
+
+    st.sidebar.caption(scenario["description"])
+    st.sidebar.caption(f"File model: {model_path}")
+
+    missing_models = [
+        f"{name}: {config['path']}"
+        for name, config in SCENARIOS.items()
+        if not (Path(__file__).resolve().parent / config["path"]).exists()
+    ]
+
+    if missing_models:
+        st.sidebar.warning(
+            "Model belum ditemukan:\n\n" + "\n".join(f"- {item}" for item in missing_models)
+        )
+
+    if not model_path.exists():
+        st.error(
+            f"File model untuk {scenario_name} belum ada di workspace: {model_path}. "
+            "Letakkan file .h5 sesuai nama tersebut atau ubah path pada konfigurasi SCENARIOS."
+        )
+        st.stop()
+
+    classification_model = load_classification_model(
+        str(model_path),
+        scenario["architecture"],
     )
-    st.stop()
+    u2net_session = load_u2net()
 
-classification_model = load_classification_model(
-    str(model_path),
-    scenario["architecture"],
-)
-u2net_session = load_u2net()
-
-uploaded_file = st.file_uploader(
-    "Upload citra kulit sapi",
-    type=["jpg", "jpeg", "png"],
-)
-
-if uploaded_file is None:
-    st.info("Silakan upload gambar untuk memulai klasifikasi.")
-    st.stop()
-
-pil_img = Image.open(uploaded_file).convert("RGB")
-original = np.array(pil_img)
-
-with st.spinner("Melakukan segmentasi U2Net dan klasifikasi..."):
-    mask, segmented_for_model, segmented_preview = segment_u2net(pil_img, u2net_session)
-    input_img = preprocess_classification(segmented_for_model)
-    predicted_class, normal_probability, confidence, inference_time = predict_image(
-        classification_model,
-        input_img,
+    uploaded_file = st.file_uploader(
+        "Upload citra kulit sapi",
+        type=["jpg", "jpeg", "png"],
     )
 
-st.subheader("Preprocessing U2Net")
-col1, col2, col3 = st.columns(3)
+    if uploaded_file is None:
+        st.info("Silakan upload gambar untuk memulai klasifikasi.")
+        st.stop()
 
-with col1:
-    st.caption("Original Image")
-    st.image(original, use_column_width=True)
+    pil_img = Image.open(uploaded_file).convert("RGB")
+    original = np.array(pil_img)
 
-with col2:
-    st.caption("Segmentation Mask")
-    st.image(mask, use_column_width=True, clamp=True)
+    with st.spinner("Melakukan segmentasi U2Net dan klasifikasi..."):
+        mask, segmented_for_model, segmented_preview = segment_u2net(pil_img, u2net_session)
+        input_img = preprocess_classification(segmented_for_model)
+        predicted_class, normal_probability, confidence, inference_time = predict_image(
+            classification_model,
+            input_img,
+        )
 
-with col3:
-    st.caption("Segmented Result")
-    st.image(segmented_preview, use_column_width=True)
+    st.subheader("Preprocessing U2Net")
+    col1, col2, col3 = st.columns(3)
 
-st.divider()
+    with col1:
+        st.caption("Original Image")
+        st.image(original, use_column_width=True)
 
-result_label = CLASS_NAMES[predicted_class]
-lumpy_probability = 1.0 - normal_probability
+    with col2:
+        st.caption("Segmentation Mask")
+        st.image(mask, use_column_width=True, clamp=True)
 
-result_col, detail_col = st.columns([1, 1])
+    with col3:
+        st.caption("Segmented Result")
+        st.image(segmented_preview, use_column_width=True)
 
-with result_col:
-    if predicted_class == 0:
-        st.error(f"Prediction: {result_label}")
-    else:
-        st.success(f"Prediction: {result_label}")
+    st.divider()
 
-    st.metric("Confidence", f"{confidence * 100:.2f}%")
+    result_label = CLASS_NAMES[predicted_class]
+    lumpy_probability = 1.0 - normal_probability
 
-with detail_col:
-    st.metric("Lumpy Skin Probability", f"{lumpy_probability:.4f}")
-    st.metric("Normal Skin Probability", f"{normal_probability:.4f}")
-    st.metric("Inference Time", f"{inference_time:.2f} detik")
-    st.caption(f"Threshold: sigmoid > {THRESHOLD} berarti Normal Skin")
-    st.caption(f"Model aktif: {scenario_name}")
+    result_col, detail_col = st.columns([1, 1])
+
+    with result_col:
+        if predicted_class == 0:
+            st.error(f"Prediction: {result_label}")
+        else:
+            st.success(f"Prediction: {result_label}")
+
+        st.metric("Confidence", f"{confidence * 100:.2f}%")
+
+    with detail_col:
+        st.metric("Lumpy Skin Probability", f"{lumpy_probability:.4f}")
+        st.metric("Normal Skin Probability", f"{normal_probability:.4f}")
+        st.metric("Inference Time", f"{inference_time:.2f} detik")
+        st.caption(f"Threshold: sigmoid > {THRESHOLD} berarti Normal Skin")
+        st.caption(f"Model aktif: {scenario_name}")
+
+
+if __name__ == "__main__":
+    main()
