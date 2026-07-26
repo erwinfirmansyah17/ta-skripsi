@@ -347,8 +347,10 @@ def main():
     ]
 
     if missing_models:
-        st.sidebar.warning(
-            "Model belum ditemukan:\n\n" + "\n".join(f"- {item}" for item in missing_models)
+        st.sidebar.info(
+            "📦 Model disimpan di Hugging Face dan diunduh otomatis "
+            "saat skenario dipilih. Setelah unduhan pertama, model di-cache "
+            "sehingga skenario berikutnya lebih cepat."
         )
 
     if not model_path.exists():
