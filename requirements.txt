@@ -1,9 +1,9 @@
-streamlit==1.28.1
-numpy==1.24.3
-opencv-python==4.8.0.76
-Pillow==10.0.0
-rembg==2.0.50
-tensorflow==2.13.0
-onnx==1.14.1
-onnxruntime==1.16.0
-huggingface-hub
+streamlit
+numpy
+Pillow
+opencv-python-headless
+h5py
+huggingface_hub
+tensorflow-cpu
+# rembg
+rembg[cpu]
