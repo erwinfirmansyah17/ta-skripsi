@@ -395,11 +395,11 @@ def main():
 
     with col2:
         st.caption("Segmentation Mask")
-        st.image(mask, use_column_width=True, clamp=True)
+        st.image(mask, use_container_width=True, clamp=True)
 
     with col3:
         st.caption("Segmented Result")
-        st.image(segmented_preview, use_column_width=True)
+        st.image(segmented_preview, use_container_width=True)
 
     st.divider()
 
