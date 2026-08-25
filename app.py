@@ -391,7 +391,7 @@ def main():
 
     with col1:
         st.caption("Original Image")
-        st.image(original, use_column_width=True)
+        st.image(original, use_container_width=True)
 
     with col2:
         st.caption("Segmentation Mask")
