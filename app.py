@@ -5,6 +5,7 @@
 # ============================================================
 
 import os
+import hashlib
 import time
 from pathlib import Path
 
@@ -13,9 +14,11 @@ import h5py
 import json
 import numpy as np
 import streamlit as st
+from dashboard_style import apply_dashboard_style
 import tensorflow as tf
 from huggingface_hub import hf_hub_download
 from PIL import Image
+from streamlit.errors import StreamlitSecretNotFoundError
 from rembg import new_session, remove
 from tensorflow.keras.applications import VGG19
 from tensorflow.keras.applications.vgg19 import preprocess_input
@@ -89,7 +92,13 @@ def get_hf_token():
                 token = value.strip().strip('"').strip("'")
                 break
 
-    return token or os.getenv("TOKEN-HG") or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN") or st.secrets.get("TOKEN-HG") or st.secrets.get("HF_TOKEN") or st.secrets.get("HUGGINGFACE_HUB_TOKEN")
+    token = token or os.getenv("TOKEN-HG") or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    if token:
+        return token
+    try:
+        return st.secrets.get("TOKEN-HG") or st.secrets.get("HF_TOKEN") or st.secrets.get("HUGGINGFACE_HUB_TOKEN")
+    except StreamlitSecretNotFoundError:
+        return None
 
 
 def download_model_from_huggingface(model_filename, destination_path):
@@ -108,7 +117,6 @@ def download_model_from_huggingface(model_filename, destination_path):
                 repo_type="model",
                 token=token,
                 local_dir=str(destination_path.parent),
-                local_dir_use_symlinks=False,
             )
 
             downloaded_file = Path(downloaded_path)
@@ -127,16 +135,12 @@ def download_model_from_huggingface(model_filename, destination_path):
 def resolve_model_path(scenario):
     base_dir = Path(__file__).resolve().parent
     cached_path = base_dir / ".cache" / "models" / scenario["filename"]
-
-    try:
-        return download_model_from_huggingface(scenario["filename"], cached_path)
-    except Exception:
-        local_path = base_dir / scenario["path"]
-        if local_path.exists():
-            return local_path
-        if cached_path.exists():
-            return cached_path
-        raise
+    local_path = base_dir / scenario["path"]
+    if local_path.is_file():
+        return local_path
+    if cached_path.is_file():
+        return cached_path
+    return download_model_from_huggingface(scenario["filename"], cached_path)
 
 
 # ============================================================
@@ -326,102 +330,160 @@ def predict_image(model, img):
 
 def main():
     st.set_page_config(
-        page_title="Lumpy Skin Disease Classification",
+        page_title="Analisis kulit sapi",
+        page_icon=":material/biotech:",
         layout="wide",
+        initial_sidebar_state="expanded",
     )
 
-    st.title("Lumpy Skin Disease Classification")
-    st.caption("U2Net segmentation + selectable VGG19 scenario model")
-
-    scenario_name = st.sidebar.selectbox("Pilih model skenario", list(SCENARIOS.keys()))
-    scenario = SCENARIOS[scenario_name]
-    model_path = resolve_model_path(scenario)
-
-    st.sidebar.caption(scenario["description"])
-    st.sidebar.caption(f"File model: {model_path}")
-
-    missing_models = [
-        f"{name}: {config['path']}"
-        for name, config in SCENARIOS.items()
-        if not (Path(__file__).resolve().parent / config["path"]).exists()
-    ]
-
-    if missing_models:
-        st.sidebar.info(
-            "📦 Model disimpan di Hugging Face dan diunduh otomatis "
-            "saat skenario dipilih. Setelah unduhan pertama, model di-cache "
-            "sehingga skenario berikutnya lebih cepat."
+    with st.sidebar:
+        st.markdown("### :material/biotech: Studi kulit sapi")
+        st.caption("Lumpy Skin Disease")
+        st.space("medium")
+        st.markdown("**Pengaturan analisis**")
+        scenario_name = st.selectbox(
+            "Model skenario", list(SCENARIOS),
+            format_func=lambda name: name.split(" - ")[0],
         )
+        scenario = SCENARIOS[scenario_name]
+        previous_scenario = st.session_state.get("selected_scenario", scenario_name)
+        scenario_changed = previous_scenario != scenario_name
+        st.session_state.selected_scenario = scenario_name
+        st.markdown(f"**{scenario_name.split(' - ', 1)[1]}**")
+        split = "80 / 10 / 10" if scenario_name.startswith(("Skenario 1", "Skenario 2")) else "70 / 20 / 10"
+        st.caption(f"Latih / validasi / uji: {split}")
+        st.caption("Ganti skenario untuk otomatis menganalisis ulang citra yang tersedia.")
+        st.space("medium")
+        with st.expander("Panduan penggunaan", icon=":material/help_outline:"):
+            st.write("Unggah foto kulit sapi yang jelas dalam format JPG atau PNG, lalu tekan Jalankan analisis.")
+            st.write("Hasil segmentasi ditampilkan lebih dahulu, diikuti hasil klasifikasi.")
 
-    if not model_path.exists():
-        st.error(
-            f"File model untuk {scenario_name} belum ada di workspace: {model_path}. "
-            "Letakkan file .h5 sesuai nama tersebut atau ubah path pada konfigurasi SCENARIOS."
-        )
-        st.stop()
 
-    classification_model = load_classification_model(
-        str(model_path),
-        scenario["architecture"],
-    )
-    u2net_session = load_u2net()
+    title_col, theme_col = st.columns([5, 1], vertical_alignment="center")
+    with title_col:
+        st.title("Analisis kulit sapi")
+        st.caption("Lumpy Skin Disease / Segmentasi dan klasifikasi citra")
+    with theme_col:
+        dark_mode = st.toggle("Mode gelap", key="dashboard_dark", value=False,
+                              help="Aktifkan untuk tema gelap; nonaktifkan untuk tema terang.")
+        st.caption(":material/dark_mode: Gelap" if dark_mode else ":material/light_mode: Terang")
+    apply_dashboard_style(dark_mode)
+    st.space("small")
 
-    uploaded_file = st.file_uploader(
-        "Upload citra kulit sapi",
-        type=["jpg", "jpeg", "png"],
-    )
+    with st.container(border=False, key="input_panel"):
+        st.subheader("01 / Input citra")
+        st.caption("Unggah foto kulit sapi dan periksa pratinjau sebelum menjalankan analisis.")
+        upload_col, preview_col = st.columns([1, 1.2], gap="large")
+        with upload_col:
+            uploaded_file = st.file_uploader(
+                "Pilih citra", type=["jpg", "jpeg", "png"],
+                help="Pilih satu foto kulit sapi yang tajam dengan pencahayaan merata.",
+            )
+            pil_img = None
+            image_key = None
+            if uploaded_file is not None:
+                try:
+                    pil_img = Image.open(uploaded_file).convert("RGB")
+                    image_key = (hashlib.sha256(uploaded_file.getvalue()).hexdigest(), scenario_name)
+                except (OSError, ValueError, Image.DecompressionBombError):
+                    st.error("Citra tidak dapat dibaca. Pilih berkas JPG atau PNG yang valid.")
+            run_analysis = st.button(
+                "Jalankan analisis", type="primary", icon=":material/arrow_forward:",
+                width="stretch", disabled=pil_img is None,
+            )
+        with preview_col:
+            st.caption("PRATINJAU CITRA")
+            with st.container(horizontal_alignment="center", vertical_alignment="center", border=False):
+                if pil_img is not None:
+                    preview = pil_img.copy()
+                    preview.thumbnail((800, 280))
+                    st.image(preview, alt="Pratinjau citra kulit sapi")
+                    st.caption(f"{pil_img.width} × {pil_img.height} piksel · {uploaded_file.size / 1024:.0f} KB")
+                else:
+                    st.caption("Belum ada citra. Unggah foto untuk melihat pratinjau.")
 
-    if uploaded_file is None:
-        st.info("Silakan upload gambar untuk memulai klasifikasi.")
-        st.stop()
+    # Results belong to both the image and the selected scenario.
+    if st.session_state.get("analysis_key") != image_key:
+        st.session_state.pop("analysis_result", None)
+        st.session_state.pop("analysis_key", None)
 
-    pil_img = Image.open(uploaded_file).convert("RGB")
-    original = np.array(pil_img)
+    image_digest = image_key[0] if image_key is not None else None
+    if st.session_state.get("segmentation_key") != image_digest:
+        st.session_state.pop("segmentation_result", None)
+        st.session_state.pop("segmentation_key", None)
 
-    with st.spinner("Melakukan segmentasi U2Net dan klasifikasi..."):
-        mask, segmented_for_model, segmented_preview = segment_u2net(pil_img, u2net_session)
-        input_img = preprocess_classification(segmented_for_model)
-        predicted_class, normal_probability, confidence, inference_time = predict_image(
-            classification_model,
-            input_img,
-        )
+    if (run_analysis or scenario_changed) and pil_img is not None:
+        st.session_state.pop("analysis_result", None)
+        try:
+            with st.spinner("Menyiapkan model dan menganalisis citra..."):
+                model_path = resolve_model_path(scenario)
+                model = load_classification_model(str(model_path), scenario["architecture"])
+                if "segmentation_result" not in st.session_state:
+                    session = load_u2net()
+                    st.session_state.segmentation_result = segment_u2net(pil_img, session)
+                    st.session_state.segmentation_key = image_digest
+                mask, segmented, preview = st.session_state.segmentation_result
+                prediction = predict_image(model, preprocess_classification(segmented))
+                st.session_state.analysis_result = (mask, preview, prediction)
+                st.session_state.analysis_key = image_key
+        except Exception as exc:
+            st.error("Analisis belum berhasil. Coba jalankan kembali.")
+            with st.expander("Detail kendala"):
+                st.text(str(exc))
 
-    st.subheader("Preprocessing U2Net")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.caption("Original Image")
-        st.image(original, use_column_width=True)
-
-    with col2:
-        st.caption("Segmentation Mask")
-        st.image(mask, use_column_width=True, clamp=True)
-
-    with col3:
-        st.caption("Segmented Result")
-        st.image(segmented_preview, use_column_width=True)
-
-    st.divider()
-
-    result_label = CLASS_NAMES[predicted_class]
-    lumpy_probability = 1.0 - normal_probability
-
-    result_col, detail_col = st.columns([1, 1])
-
-    with result_col:
-        if predicted_class == 0:
-            st.error(f"Prediction: {result_label}")
+    result = st.session_state.get("analysis_result")
+    st.space("small")
+    with st.container(border=False, key="segmentation_panel"):
+        st.subheader("02 / Hasil segmentasi")
+        st.caption("Pemisahan objek dari latar menggunakan U2Net.")
+        if result is None:
+            st.markdown(":material/layers: **Menunggu citra diproses**")
+            st.caption("Citra asli, mask, dan hasil segmentasi akan ditampilkan berdampingan.")
         else:
-            st.success(f"Prediction: {result_label}")
+            mask, segmented_preview, prediction = result
+            for col, label, description, img in zip(
+                st.columns(3, gap="medium"),
+                ["Citra asli", "Mask segmentasi", "Hasil segmentasi"],
+                ["Foto yang diunggah", "Area objek yang dipertahankan", "Objek pada latar putih"],
+                [pil_img, mask, segmented_preview],
+            ):
+                with col.container(border=False):
+                    st.markdown(f"**{label}**")
+                    display_img = img.copy() if isinstance(img, Image.Image) else Image.fromarray(img)
+                    display_img.thumbnail((640, 240))
+                    with st.container(horizontal_alignment="center", vertical_alignment="center"):
+                        st.image(display_img, alt=label)
+                    st.caption(description)
 
-        st.metric("Confidence", f"{confidence * 100:.2f}%")
+    st.space("small")
+    with st.container(border=False, key="classification_panel"):
+        st.subheader("03 / Hasil klasifikasi")
+        st.caption("Prediksi kelas berdasarkan citra yang telah melalui segmentasi.")
+        if result is None:
+            st.markdown(":material/query_stats: **Belum ada hasil klasifikasi**")
+            st.caption("Kelas prediksi dan probabilitas tampil setelah analisis selesai.")
+        else:
+            predicted_class, normal_probability, confidence, inference_time = prediction
+            summary_col, probability_col = st.columns([1, 1.2], gap="large")
+            with summary_col.container(border=False):
+                st.caption("KELAS PREDIKSI")
+                st.subheader(f":orange[{CLASS_NAMES[predicted_class]}]" if predicted_class == 0 else f":green[{CLASS_NAMES[predicted_class]}]")
+                confidence_col, time_col = st.columns(2)
+                confidence_col.metric("Keyakinan model", f"{confidence * 100:.2f}%")
+                time_col.metric("Waktu inferensi", f"{inference_time:.2f} dtk")
+            with probability_col.container(border=False):
+                st.markdown("**Probabilitas kelas**")
+                st.progress(1.0 - normal_probability, text=f"Lumpy Skin · {(1.0 - normal_probability) * 100:.2f}%")
+                st.progress(normal_probability, text=f"Normal Skin · {normal_probability * 100:.2f}%")
+                st.caption(scenario_name)
+            with st.expander("Detail pemrosesan", icon=":material/tune:"):
+                st.caption(f"Model: {scenario_name}")
+                st.caption(f"Input klasifikasi: {IMG_SIZE[0]} × {IMG_SIZE[1]} piksel · Preprocessing VGG19")
+                st.caption(f"Ambang keputusan: sigmoid > {THRESHOLD} diklasifikasikan sebagai Normal Skin.")
+                st.caption("Waktu inferensi hanya mengukur prediksi klasifikasi, tidak termasuk pemuatan model dan segmentasi.")
 
-    with detail_col:
-        st.metric("Lumpy Skin Probability", f"{lumpy_probability:.4f}")
-        st.metric("Normal Skin Probability", f"{normal_probability:.4f}")
-        st.metric("Inference Time", f"{inference_time:.2f} detik")
-        st.caption(f"Threshold: sigmoid > {THRESHOLD} berarti Normal Skin")
-        st.caption(f"Model aktif: {scenario_name}")
+    st.space("medium")
+    st.caption("Lumpy Skin Disease · Klasifikasi citra berbasis VGG19")
 
 
 if __name__ == "__main__":
